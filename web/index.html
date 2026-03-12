@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Track Pacer Control</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Track Robot Control</h1>
+
+      <section class="card status-card">
+        <h2>System State</h2>
+        <p id="statusText" class="status stopped">STOPPED</p>
+        <p class="substatus">ARM: <span id="armText">DISARMED</span></p>
+        <p class="substatus">Serial: <span id="serialText">UNKNOWN</span></p>
+        <p class="substatus">Vision: <span id="visionText">UNKNOWN</span></p>
+        <p class="error" id="errorText"></p>
+      </section>
+
+      <section class="card">
+        <h2>Motor Speed</h2>
+        <input id="speedSlider" type="range" min="0" max="100" value="25" />
+        <p>Requested speed: <span id="speedValue">25</span>%</p>
+      </section>
+
+      <section class="card buttons four">
+        <button id="armBtn" class="btn arm">ARM</button>
+        <button id="disarmBtn" class="btn disarm">DISARM</button>
+        <button id="startBtn" class="btn start">START</button>
+        <button id="stopBtn" class="btn stop">STOP</button>
+      </section>
+
+      <section class="card">
+        <h2>Manual Steering Override (optional)</h2>
+        <div class="steering-row">
+          <button id="leftBtn" class="btn small">◀ Left</button>
+          <button id="centerBtn" class="btn small">Center</button>
+          <button id="rightBtn" class="btn small">Right ▶</button>
+          <button id="visionBtn" class="btn small">Vision</button>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/script.js"></script>
+  </body>
+</html>

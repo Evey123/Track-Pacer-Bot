@@ -1,0 +1,111 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --card: #1e293b;
+  --text: #e2e8f0;
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --blue: #3b82f6;
+}
+
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.container {
+  max-width: 620px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border-radius: 10px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+h1,
+h2 {
+  margin-top: 0;
+}
+
+.status {
+  margin: 0;
+  font-size: 1.4rem;
+  font-weight: bold;
+}
+
+.status.running {
+  color: var(--green);
+}
+
+.status.stopped {
+  color: var(--red);
+}
+
+.substatus {
+  margin: 0.25rem 0;
+  opacity: 0.9;
+}
+
+.error {
+  min-height: 1.2rem;
+  color: #fca5a5;
+  font-size: 0.9rem;
+}
+
+input[type='range'] {
+  width: 100%;
+}
+
+.buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.8rem;
+}
+
+.buttons.four {
+  grid-template-columns: 1fr 1fr;
+}
+
+.btn {
+  border: none;
+  border-radius: 8px;
+  padding: 0.9rem;
+  font-size: 1rem;
+  font-weight: bold;
+  color: white;
+  cursor: pointer;
+}
+
+.btn.arm {
+  background: var(--amber);
+}
+
+.btn.disarm {
+  background: #64748b;
+}
+
+.btn.start {
+  background: var(--green);
+}
+
+.btn.stop {
+  background: var(--red);
+}
+
+.btn.small {
+  background: #334155;
+  font-size: 0.95rem;
+}
+
+.steering-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
