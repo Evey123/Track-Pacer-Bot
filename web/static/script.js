@@ -1,5 +1,3 @@
-const speedSlider = document.getElementById('speedSlider');
-const speedValue = document.getElementById('speedValue');
 const statusText = document.getElementById('statusText');
 const armText = document.getElementById('armText');
 const serialText = document.getElementById('serialText');
@@ -36,8 +34,12 @@ function renderStatus(status) {
   targetPaceText.textContent = Number(status.target_speed_mps ?? 0).toFixed(2);
   errorText.textContent = status.last_error || '';
 
+  codex/add-distance-input-functionality-3zcr7m
+
   speedSlider.value = status.requested_speed;
   speedValue.textContent = status.requested_speed;
+  
+  main
   distanceSelect.value = String(status.target_distance_m);
   timeInput.value = Number(status.target_time_s ?? 0).toFixed(1);
 }
@@ -58,10 +60,11 @@ async function action(url, body) {
   }
 }
 
-speedSlider.addEventListener('input', async (event) => {
-  const speed = Number(event.target.value);
-  speedValue.textContent = speed;
-  await action('/api/set_speed', { speed });
+
+document.getElementById('saveWorkoutBtn').addEventListener('click', async () => {
+  const distance_m = Number(distanceSelect.value);
+  const time_s = Number(timeInput.value);
+  await action('/api/workout', { distance_m, time_s });
 });
 
 document.getElementById('saveWorkoutBtn').addEventListener('click', async () => {
