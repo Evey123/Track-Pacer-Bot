@@ -23,7 +23,7 @@ const unsigned long TELEMETRY_PERIOD_MS = 200;
 
 const float WHEEL_DIAMETER_INCHES = 4.2f;
 const float WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254f * PI;
-codex/add-distance-input-functionality-3zcr7m
+
 const float METERS_PER_ROTATION = (2.0f * PI * (WHEEL_DIAMETER_INCHES / 2.0f)) * 0.0254f;
 
 const float ENCODER_PULSES_PER_REV = 2048.0f;  // Update to your encoder's real pulses per wheel revolution.
