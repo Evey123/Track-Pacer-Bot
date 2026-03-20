@@ -30,8 +30,10 @@ ESC_FORWARD_MAX_US = 1700
 COMMAND_PERIOD_S = 0.05
 SUPPORTED_DISTANCES_M = [100, 200, 400, 800, 1600]
 WHEEL_DIAMETER_INCHES = 4.2
-WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi
+WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi codex/add-distance-input-functionality-3zcr7m
 METERS_PER_ROTATION = (2.0 * math.pi * (WHEEL_DIAMETER_INCHES / 2.0)) * 0.0254
+ENCODER_PULSES_PER_REV = 2048  # Update to your encoder's actual pulses-per-wheel-revolution.
+main
 # ==========================================
 
 app = Flask(__name__, static_folder="web/static")
@@ -60,8 +62,12 @@ state = RobotState()
 state_lock = threading.Lock()
 
 
-def distance_for_counts(counts: int) -> float:
-    return counts * METERS_PER_ROTATION
+def distance_for_counts(counts: int) -> float
+codex/add-distance-input-functionality-3zcr7m
+    return counts * METERS_PER_ROTATIO
+
+    return (counts / ENCODER_PULSES_PER_REV) * WHEEL_CIRCUMFERENCE_M
+main
 
 
 def calculate_target_speed(distance_m: float, time_s: float) -> float:
@@ -73,6 +79,15 @@ def calculate_target_speed(distance_m: float, time_s: float) -> float:
 def sync_workout_metrics():
     with state_lock:
         state.target_speed_mps = calculate_target_speed(state.target_distance_m, state.target_time_s)
+ codex/add-distance-input-functionality-3zcr7m
+
+
+
+def map_speed_to_throttle(speed_percent: int) -> int:
+    speed_percent = max(0, min(100, speed_percent))
+    span = ESC_FORWARD_MAX_US - ESC_FORWARD_MIN_US
+    return ESC_FORWARD_MIN_US + int((speed_percent / 100.0) * span)
+ main
 
 
 class SerialLink:
@@ -292,7 +307,10 @@ def _start_logic():
         state.running = True
         state.pacing_complete = False
         state.measured_distance_m = 0.0
+        codex/add-distance-input-functionality-3zcr7m
         state.measured_speed_mps = 0.0
+        
+        main
         state.encoder_count = 0
         state.last_error = ""
         distance_m = state.target_distance_m
@@ -309,6 +327,22 @@ def _start_logic():
 
 def _stop_logic(reason="user_stop"):
     set_safe_stop(reason)
+
+
+def _set_workout_logic(distance_m: int, time_s: float):
+    if distance_m not in SUPPORTED_DISTANCES_M:
+        raise ValueError("unsupported_distance")
+    target_speed_mps = calculate_target_speed(distance_m, time_s)
+    with state_lock:
+        state.target_distance_m = distance_m
+        state.target_time_s = time_s
+        state.target_speed_mps = target_speed_mps
+        state.pacing_complete = False
+        state.last_error = ""
+    ok = serial_link.send_line(f"WORKOUTCFG:{distance_m:.2f},{time_s:.2f},{target_speed_mps:.3f}")
+    with state_lock:
+        state.serial_ok = ok
+    return ok
 
 
 def _set_workout_logic(distance_m: int, time_s: float):
@@ -372,6 +406,20 @@ def api_workout():
     return jsonify(current_status())
 
 
+@app.post("/api/workout")
+def api_workout():
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        distance_m = int(body.get("distance_m", state.target_distance_m))
+        time_s = float(body.get("time_s", state.target_time_s))
+        _set_workout_logic(distance_m, time_s)
+    except (TypeError, ValueError) as exc:
+        with state_lock:
+            state.last_error = str(exc)
+        return jsonify(current_status()), 400
+    return jsonify(current_status())
+
+
 @app.post("/api/manual_steer")
 def api_manual_steer():
     body = request.get_json(force=True, silent=True) or {}
@@ -409,7 +457,13 @@ def current_status() -> dict:
             "pacing_complete": state.pacing_complete,
             "wheel_diameter_inches": WHEEL_DIAMETER_INCHES,
             "wheel_circumference_m": WHEEL_CIRCUMFERENCE_M,
+
+          codex/add-distance-input-functionality-3zcr7m
             "meters_per_rotation": METERS_PER_ROTATION,
+
+            "encoder_pulses_per_rev": ENCODER_PULSES_PER_REV,
+
+          main
             "supported_distances_m": SUPPORTED_DISTANCES_M,
         }
 
