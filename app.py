@@ -30,7 +30,7 @@ ESC_FORWARD_MAX_US = 1700
 COMMAND_PERIOD_S = 0.05
 SUPPORTED_DISTANCES_M = [100, 200, 400, 800, 1600]
 WHEEL_DIAMETER_INCHES = 4.2
-WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi codex/add-distance-input-functionality-3zcr7m
+WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi 
 METERS_PER_ROTATION = (2.0 * math.pi * (WHEEL_DIAMETER_INCHES / 2.0)) * 0.0254
 ENCODER_PULSES_PER_REV = 2048  # Update to your encoder's actual pulses-per-wheel-revolution.
 main
@@ -79,7 +79,7 @@ def calculate_target_speed(distance_m: float, time_s: float) -> float:
 def sync_workout_metrics():
     with state_lock:
         state.target_speed_mps = calculate_target_speed(state.target_distance_m, state.target_time_s)
- codex/add-distance-input-functionality-3zcr7m
+
 
 
 
@@ -307,7 +307,7 @@ def _start_logic():
         state.running = True
         state.pacing_complete = False
         state.measured_distance_m = 0.0
-        codex/add-distance-input-functionality-3zcr7m
+       
         state.measured_speed_mps = 0.0
         
         main
