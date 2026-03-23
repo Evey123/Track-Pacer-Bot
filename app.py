@@ -1,4 +1,5 @@
 import argparse
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -27,6 +28,10 @@ ESC_FORWARD_MIN_US = 1520
 ESC_FORWARD_MAX_US = 1700
 
 COMMAND_PERIOD_S = 0.05
+DISTANCE_PRESETS_M = [100, 200, 400, 800, 1600]
+WHEEL_DIAMETER_INCHES = 4.2
+WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi
+METERS_PER_ROTATION = (2.0 * math.pi * (WHEEL_DIAMETER_INCHES / 2.0)) * 0.0254
 # ==========================================
 
 app = Flask(__name__, static_folder="web/static")
@@ -36,23 +41,46 @@ app = Flask(__name__, static_folder="web/static")
 class RobotState:
     armed: bool = False
     running: bool = False
-    requested_speed: int = 25  # percent (0..100)
     steering_angle: int = STEER_CENTER
     throttle_us: int = ESC_NEUTRAL_US
     vision_ok: bool = False
     serial_ok: bool = False
     manual_steer_mode: str = "vision"  # vision|left|center|right
     last_error: str = ""
+    target_distance_m: float = 100.0
+    target_time_s: float = 25.0
+    target_speed_mps: float = 4.0
+    encoder_count: int = 0
+    measured_distance_m: float = 0.0
+    measured_speed_mps: float = 0.0
+    pacing_complete: bool = False
+    target_rotations: float = 0.0
 
 
 state = RobotState()
 state_lock = threading.Lock()
 
 
-def map_speed_to_throttle(speed_percent: int) -> int:
-    speed_percent = max(0, min(100, speed_percent))
-    span = ESC_FORWARD_MAX_US - ESC_FORWARD_MIN_US
-    return ESC_FORWARD_MIN_US + int((speed_percent / 100.0) * span)
+def distance_for_counts(counts: int) -> float:
+    return counts * METERS_PER_ROTATION
+
+
+def calculate_target_speed(distance_m: float, time_s: float) -> float:
+    if time_s <= 0:
+        raise ValueError("time_must_be_positive")
+    if distance_m <= 0:
+        raise ValueError("distance_must_be_positive")
+    return distance_m / time_s
+
+
+def rotations_for_distance(distance_m: float) -> float:
+    return distance_m / METERS_PER_ROTATION
+
+
+def sync_workout_metrics():
+    with state_lock:
+        state.target_speed_mps = calculate_target_speed(state.target_distance_m, state.target_time_s)
+        state.target_rotations = rotations_for_distance(state.target_distance_m)
 
 
 class SerialLink:
@@ -83,6 +111,19 @@ class SerialLink:
             except serial.SerialException:
                 self.ser = None
                 return False
+
+    def read_line(self):
+        with self.lock:
+            if not self.ensure_connected():
+                return None
+            try:
+                raw = self.ser.readline()
+            except serial.SerialException:
+                self.ser = None
+                return None
+        if not raw:
+            return None
+        return raw.decode("utf-8", errors="ignore").strip()
 
     def close(self):
         with self.lock:
@@ -121,6 +162,38 @@ def arm_system() -> bool:
         if not state.armed:
             state.last_error = "arm_failed_serial"
     return ok1 and ok2
+
+
+def serial_reader_loop():
+    while True:
+        line = serial_link.read_line()
+        if not line:
+            time.sleep(0.05)
+            continue
+
+        if not line.startswith("TELEMETRY:"):
+            continue
+
+        payload = {}
+        for item in line[len("TELEMETRY:") :].split(","):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            payload[key.strip()] = value.strip()
+
+        with state_lock:
+            if "count" in payload:
+                state.encoder_count = int(payload["count"])
+                state.measured_distance_m = distance_for_counts(state.encoder_count)
+            if "meters" in payload:
+                state.measured_distance_m = float(payload["meters"])
+            if "mps" in payload:
+                state.measured_speed_mps = float(payload["mps"])
+            if payload.get("done") == "1":
+                state.running = False
+                state.throttle_us = ESC_NEUTRAL_US
+                state.pacing_complete = True
+                state.last_error = "workout_complete"
 
 
 def vision_and_control_loop(show_debug: bool):
@@ -185,21 +258,15 @@ def vision_and_control_loop(show_debug: bool):
 
             state.steering_angle = int(np.clip(steer_angle, 0, 180))
 
-            if state.running and state.armed:
-                state.throttle_us = map_speed_to_throttle(state.requested_speed)
-            else:
-                state.throttle_us = ESC_NEUTRAL_US
-
-            throttle = state.throttle_us
+            running = state.running and state.armed
             steering = state.steering_angle
 
         now = time.time()
         if now - last_send >= COMMAND_PERIOD_S:
             ok1 = serial_link.send_line(f"STEER:{steering}")
-            if throttle <= ESC_NEUTRAL_US:
+            ok2 = True
+            if not running:
                 ok2 = serial_link.send_line("STOP")
-            else:
-                ok2 = serial_link.send_line(f"THROTTLE:{throttle}")
 
             with state_lock:
                 state.serial_ok = ok1 and ok2
@@ -231,18 +298,42 @@ def _start_logic():
         if not state.armed:
             return False
         state.running = True
+        state.pacing_complete = False
+        state.measured_distance_m = 0.0
+        state.measured_speed_mps = 0.0
+        state.encoder_count = 0
         state.last_error = ""
-    return True
+        distance_m = state.target_distance_m
+        time_s = state.target_time_s
+        target_speed_mps = state.target_speed_mps
+        target_rotations = state.target_rotations
+    ok = serial_link.send_line(f"WORKOUT:{distance_m:.2f},{time_s:.2f},{target_speed_mps:.3f},{target_rotations:.2f}")
+    with state_lock:
+        state.serial_ok = ok
+        if not ok:
+            state.running = False
+            state.last_error = "workout_send_failed"
+    return ok
 
 
 def _stop_logic(reason="user_stop"):
     set_safe_stop(reason)
 
 
-def _set_speed_logic(speed: int):
-    speed = max(0, min(100, int(speed)))
+def _set_workout_logic(distance_m: float, time_s: float):
+    target_speed_mps = calculate_target_speed(distance_m, time_s)
+    target_rotations = rotations_for_distance(distance_m)
     with state_lock:
-        state.requested_speed = speed
+        state.target_distance_m = distance_m
+        state.target_time_s = time_s
+        state.target_speed_mps = target_speed_mps
+        state.target_rotations = target_rotations
+        state.pacing_complete = False
+        state.last_error = ""
+    ok = serial_link.send_line(f"WORKOUTCFG:{distance_m:.2f},{time_s:.2f},{target_speed_mps:.3f},{target_rotations:.2f}")
+    with state_lock:
+        state.serial_ok = ok
+    return ok
 
 
 @app.post("/api/arm")
@@ -265,7 +356,7 @@ def api_start():
     started = _start_logic()
     if not started:
         with state_lock:
-            state.last_error = "not_armed"
+            state.last_error = "not_armed_or_workout_failed"
     return jsonify(current_status())
 
 
@@ -276,12 +367,17 @@ def api_stop():
     return jsonify(current_status())
 
 
-@app.post("/api/set_speed")
-@app.post("/set_speed")
-def api_set_speed():
+@app.post("/api/workout")
+def api_workout():
     body = request.get_json(force=True, silent=True) or {}
-    speed = body.get("speed", 0)
-    _set_speed_logic(speed)
+    try:
+        distance_m = float(body.get("distance_m", state.target_distance_m))
+        time_s = float(body.get("time_s", state.target_time_s))
+        _set_workout_logic(distance_m, time_s)
+    except (TypeError, ValueError) as exc:
+        with state_lock:
+            state.last_error = str(exc)
+        return jsonify(current_status()), 400
     return jsonify(current_status())
 
 
@@ -307,13 +403,24 @@ def current_status() -> dict:
         return {
             "armed": state.armed,
             "running": state.running,
-            "requested_speed": state.requested_speed,
             "steering_angle": state.steering_angle,
             "throttle_us": state.throttle_us,
             "vision_ok": state.vision_ok,
             "serial_ok": state.serial_ok,
             "manual_steer_mode": state.manual_steer_mode,
             "last_error": state.last_error,
+            "target_distance_m": state.target_distance_m,
+            "target_time_s": state.target_time_s,
+            "target_speed_mps": state.target_speed_mps,
+            "target_rotations": state.target_rotations,
+            "encoder_count": state.encoder_count,
+            "measured_distance_m": state.measured_distance_m,
+            "measured_speed_mps": state.measured_speed_mps,
+            "pacing_complete": state.pacing_complete,
+            "wheel_diameter_inches": WHEEL_DIAMETER_INCHES,
+            "wheel_circumference_m": WHEEL_CIRCUMFERENCE_M,
+            "meters_per_rotation": METERS_PER_ROTATION,
+            "distance_presets_m": DISTANCE_PRESETS_M,
         }
 
 
@@ -324,7 +431,11 @@ def main():
     parser.add_argument("--debug-view", action="store_true", help="Show OpenCV debug windows")
     args = parser.parse_args()
 
+    sync_workout_metrics()
     disarm("startup_default")
+
+    serial_reader = threading.Thread(target=serial_reader_loop, daemon=True)
+    serial_reader.start()
 
     worker = threading.Thread(target=vision_and_control_loop, args=(args.debug_view,), daemon=True)
     worker.start()
