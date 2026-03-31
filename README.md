@@ -105,33 +105,9 @@ If you press START before ARM, backend returns state with `last_error: "not_arme
 1. Install Arduino IDE + Teensyduino.
 2. Open `teensy/teensy_control.ino`.
 3. Select Teensy board + USB port in **Tools**.
-4. **Important:** close any program using the Teensy serial port before upload (stop `python app.py`, close Serial Monitor/Plotter).
-5. Click **Upload**.
-6. If upload fails after successful compile, press the physical **PROGRAM** button on Teensy once during upload.
-7. Keep ESC powered and allow neutral boot window (`ARMING_NEUTRAL_MS`, default 2s).
-8. Verify Teensy appears on Jetson as `/dev/ttyACM0` (or update `SERIAL_PORT` in `app.py`).
-
-### Upload error troubleshooting (compile succeeds, upload fails)
-
-If you see memory usage and then only **"An error occurred while uploading the sketch"**, the sketch compiled but the PC/Jetson could not switch Teensy into loader mode.
-
-Try in this exact order:
-
-1. Stop backend so serial is free:
-   - `pkill -f "python app.py"`
-2. Unplug/replug Teensy USB cable (data cable, not charge-only).
-3. In Arduino IDE set:
-   - **Tools > Board:** `Teensy 4.1`
-   - **Tools > USB Type:** `Serial`
-   - **Tools > Port:** select Teensy port
-4. Click Upload and press Teensy **PROGRAM** button once if it does not auto-load.
-5. Enable **File > Preferences > Show verbose output during upload** and retry.
-6. On Linux, verify device access:
-   - `ls -l /dev/ttyACM* /dev/hidraw*`
-   - If permission denied, add your user to `dialout` and re-login:
-     - `sudo usermod -aG dialout $USER`
-7. If still failing, reboot Jetson and try upload before starting any Python process.
-
+4. Click **Upload**.
+5. Keep ESC powered and allow neutral boot window (`ARMING_NEUTRAL_MS`, default 2s).
+6. Verify Teensy appears on Jetson as `/dev/ttyACM0` (or update `SERIAL_PORT` in `app.py`).
 
 ## Data flow: button press to motor movement
 
