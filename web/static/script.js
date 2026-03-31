@@ -7,7 +7,8 @@ const encoderText = document.getElementById('encoderText');
 const distanceText = document.getElementById('distanceText');
 const measuredSpeedText = document.getElementById('measuredSpeedText');
 const targetPaceText = document.getElementById('targetPaceText');
-const distanceSelect = document.getElementById('distanceSelect');
+const targetRotationsText = document.getElementById('targetRotationsText');
+const distanceInput = document.getElementById('distanceInput');
 const timeInput = document.getElementById('timeInput');
 
 async function postJson(url, body) {
@@ -32,15 +33,10 @@ function renderStatus(status) {
   distanceText.textContent = Number(status.measured_distance_m ?? 0).toFixed(2);
   measuredSpeedText.textContent = Number(status.measured_speed_mps ?? 0).toFixed(2);
   targetPaceText.textContent = Number(status.target_speed_mps ?? 0).toFixed(2);
+  targetRotationsText.textContent = Number(status.target_rotations ?? 0).toFixed(2);
   errorText.textContent = status.last_error || '';
 
-  codex/add-distance-input-functionality-3zcr7m
-
-  speedSlider.value = status.requested_speed;
-  speedValue.textContent = status.requested_speed;
-  
-  main
-  distanceSelect.value = String(status.target_distance_m);
+  distanceInput.value = Number(status.target_distance_m ?? 0).toFixed(1);
   timeInput.value = Number(status.target_time_s ?? 0).toFixed(1);
 }
 
@@ -62,13 +58,7 @@ async function action(url, body) {
 
 
 document.getElementById('saveWorkoutBtn').addEventListener('click', async () => {
-  const distance_m = Number(distanceSelect.value);
-  const time_s = Number(timeInput.value);
-  await action('/api/workout', { distance_m, time_s });
-});
-
-document.getElementById('saveWorkoutBtn').addEventListener('click', async () => {
-  const distance_m = Number(distanceSelect.value);
+  const distance_m = Number(distanceInput.value);
   const time_s = Number(timeInput.value);
   await action('/api/workout', { distance_m, time_s });
 });
@@ -85,3 +75,10 @@ document.getElementById('visionBtn').addEventListener('click', async () => actio
 
 refreshStatus();
 setInterval(refreshStatus, 1000);
+
+
+document.querySelectorAll('.preset-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    distanceInput.value = button.dataset.distance;
+  });
+});

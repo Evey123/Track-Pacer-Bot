@@ -147,3 +147,10 @@ label {
   display: block;
   font-size: 0.95rem;
 }
+
+.preset-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}

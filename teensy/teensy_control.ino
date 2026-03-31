@@ -2,8 +2,8 @@
 #include <Servo.h>
 
 // ======= Hardware / tuning defaults =======
-const int STEERING_PIN = 9;
-const int THROTTLE_PIN = 2;
+const int STEERING_PIN = 5;
+const int THROTTLE_PIN = 6;
 const int ENCODER_PIN = 23;
 const int BAUD_RATE = 115200;
 
@@ -23,11 +23,7 @@ const unsigned long TELEMETRY_PERIOD_MS = 200;
 
 const float WHEEL_DIAMETER_INCHES = 4.2f;
 const float WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254f * PI;
-
 const float METERS_PER_ROTATION = (2.0f * PI * (WHEEL_DIAMETER_INCHES / 2.0f)) * 0.0254f;
-
-const float ENCODER_PULSES_PER_REV = 2048.0f;  // Update to your encoder's real pulses per wheel revolution.
- main
 const float KP_SPEED = 35.0f;
 // ==========================================
 
@@ -49,6 +45,7 @@ int currentThrottleUs = ESC_NEUTRAL_US;
 float targetDistanceM = 100.0f;
 float targetTimeS = 25.0f;
 float targetSpeedMps = 4.0f;
+float targetRotations = 0.0f;
 float measuredSpeedMps = 0.0f;
 
 void encoderISR() {
@@ -56,11 +53,7 @@ void encoderISR() {
 }
 
 float metersForCounts(long counts) {
-  codex/add-distance-input-functionality-3zcr7m
   return static_cast<float>(counts) * METERS_PER_ROTATION;
-
-  return (static_cast<float>(counts) / ENCODER_PULSES_PER_REV) * WHEEL_CIRCUMFERENCE_M;
-  main
 }
 
 void applySafeStop() {
@@ -88,23 +81,26 @@ void resetWorkoutTracking() {
   measuredSpeedMps = 0.0f;
 }
 
-void configureWorkout(float distanceM, float timeS, float speedMps) {
+void configureWorkout(float distanceM, float timeS, float speedMps, float rotations) {
   targetDistanceM = distanceM;
   targetTimeS = timeS;
   targetSpeedMps = speedMps;
+  targetRotations = rotations;
 }
 
 void processWorkoutCommand(const String &payload, bool startNow) {
   int firstComma = payload.indexOf(',');
   int secondComma = payload.indexOf(',', firstComma + 1);
-  if (firstComma < 0 || secondComma < 0) {
+  int thirdComma = payload.indexOf(',', secondComma + 1);
+  if (firstComma < 0 || secondComma < 0 || thirdComma < 0) {
     return;
   }
 
   float distanceM = payload.substring(0, firstComma).toFloat();
   float timeS = payload.substring(firstComma + 1, secondComma).toFloat();
-  float speedMps = payload.substring(secondComma + 1).toFloat();
-  configureWorkout(distanceM, timeS, speedMps);
+  float speedMps = payload.substring(secondComma + 1, thirdComma).toFloat();
+  float rotations = payload.substring(thirdComma + 1).toFloat();
+  configureWorkout(distanceM, timeS, speedMps, rotations);
 
   if (startNow) {
     resetWorkoutTracking();
@@ -184,7 +180,7 @@ void updateWorkoutControl() {
   }
 
   float traveledM = metersForCounts(tickCount);
-  if (workoutActive && traveledM >= targetDistanceM) {
+  if (workoutActive && static_cast<float>(tickCount) >= targetRotations) {
     applySafeStop();
   }
 
