@@ -25,7 +25,6 @@ const float WHEEL_DIAMETER_INCHES = 4.2f;
 const float WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254f * PI;
 const float METERS_PER_ROTATION = (2.0f * PI * (WHEEL_DIAMETER_INCHES / 2.0f)) * 0.0254f;
 const float KP_SPEED = 35.0f;
-const float MIN_TARGET_SPEED_MPS = 0.4f;
 // ==========================================
 
 Servo steeringServo;
@@ -36,7 +35,6 @@ unsigned long lastCommandTime = 0;
 unsigned long bootTime = 0;
 unsigned long lastTelemetryTime = 0;
 unsigned long lastSpeedSampleMs = 0;
-unsigned long workoutStartMs = 0;
 volatile long encoderTicks = 0;
 long lastSpeedSampleCount = 0;
 bool armed = false;
@@ -106,7 +104,6 @@ void processWorkoutCommand(const String &payload, bool startNow) {
 
   if (startNow) {
     resetWorkoutTracking();
-    workoutStartMs = millis();
     workoutActive = armed;
   }
 }
@@ -188,12 +185,7 @@ void updateWorkoutControl() {
   }
 
   if (workoutActive && armed) {
-    float elapsedWorkoutS = static_cast<float>(now - workoutStartMs) / 1000.0f;
-    float remainingDistanceM = max(0.0f, targetDistanceM - traveledM);
-    float remainingTimeS = max(0.01f, targetTimeS - elapsedWorkoutS);
-    float dynamicTargetSpeedMps = max(MIN_TARGET_SPEED_MPS, remainingDistanceM / remainingTimeS);
-
-    float speedError = dynamicTargetSpeedMps - measuredSpeedMps;
+    float speedError = targetSpeedMps - measuredSpeedMps;
     int commandedThrottle = ESC_FORWARD_BASE_US + static_cast<int>(speedError * KP_SPEED);
     commandedThrottle = constrain(commandedThrottle, ESC_FORWARD_BASE_US, ESC_FORWARD_LIMIT_US);
     applyThrottle(commandedThrottle);

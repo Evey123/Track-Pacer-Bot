@@ -61,7 +61,7 @@ h2 {
 
 .hint {
   font-size: 0.9rem;
-  color: #bfdbfe;
+  color: #cbd5e1;
   margin-top: 0.75rem;
 }
 
@@ -76,8 +76,8 @@ select {
   margin-top: 0.35rem;
   padding: 0.65rem;
   border-radius: 8px;
-  border: 1px solid #1d4ed8;
-  background: #0a1a33;
+  border: 1px solid #475569;
+  background: #0f172a;
   color: var(--text);
 }
 

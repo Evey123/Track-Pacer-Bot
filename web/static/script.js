@@ -11,8 +11,6 @@ const targetRotationsText = document.getElementById('targetRotationsText');
 const distanceInput = document.getElementById('distanceInput');
 const timeInput = document.getElementById('timeInput');
 
-let plannerDirty = false;
-
 async function postJson(url, body) {
   const res = await fetch(url, {
     method: 'POST',
@@ -38,10 +36,8 @@ function renderStatus(status) {
   targetRotationsText.textContent = Number(status.target_rotations ?? 0).toFixed(2);
   errorText.textContent = status.last_error || '';
 
-  if (!plannerDirty) {
-    distanceInput.value = Number(status.target_distance_m ?? 0).toFixed(1);
-    timeInput.value = Number(status.target_time_s ?? 0).toFixed(1);
-  }
+  distanceInput.value = Number(status.target_distance_m ?? 0).toFixed(1);
+  timeInput.value = Number(status.target_time_s ?? 0).toFixed(1);
 }
 
 async function refreshStatus() {
@@ -65,7 +61,6 @@ document.getElementById('saveWorkoutBtn').addEventListener('click', async () => 
   const distance_m = Number(distanceInput.value);
   const time_s = Number(timeInput.value);
   await action('/api/workout', { distance_m, time_s });
-  plannerDirty = false;
 });
 
 document.getElementById('armBtn').addEventListener('click', async () => action('/api/arm'));
@@ -82,21 +77,8 @@ refreshStatus();
 setInterval(refreshStatus, 1000);
 
 
-distanceInput.addEventListener('input', () => {
-  plannerDirty = true;
-});
-
-timeInput.addEventListener('input', () => {
-  plannerDirty = true;
-});
-
 document.querySelectorAll('.preset-btn').forEach((button) => {
-  button.addEventListener('click', async () => {
+  button.addEventListener('click', () => {
     distanceInput.value = button.dataset.distance;
-    plannerDirty = true;
-    const distance_m = Number(distanceInput.value);
-    const time_s = Number(timeInput.value);
-    await action('/api/workout', { distance_m, time_s });
-    plannerDirty = false;
   });
 });
