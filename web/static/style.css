@@ -1,12 +1,12 @@
 :root {
   color-scheme: dark;
-  --bg: #0f172a;
-  --card: #1e293b;
-  --text: #e2e8f0;
-  --green: #10b981;
-  --red: #ef4444;
+  --bg: #06142b;
+  --card: #0e223f;
+  --text: #dbeafe;
+  --green: #22c55e;
+  --red: #f87171;
   --amber: #f59e0b;
-  --blue: #3b82f6;
+  --blue: #2563eb;
 }
 
 body {
@@ -106,7 +106,7 @@ select {
 }
 
 .btn.disarm {
-  background: #64748b;
+  background: #1e3a8a;
 }
 
 .btn.start {
@@ -118,7 +118,7 @@ select {
 }
 
 .btn.small {
-  background: #334155;
+  background: #1d4ed8;
   font-size: 0.95rem;
 }
 
