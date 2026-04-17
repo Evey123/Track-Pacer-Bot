@@ -1,7 +1,10 @@
 import argparse
+import csv
+import math
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -27,6 +30,43 @@ ESC_FORWARD_MIN_US = 1520
 ESC_FORWARD_MAX_US = 1700
 
 COMMAND_PERIOD_S = 0.05
+DISTANCE_PRESETS_M = [100, 200, 400, 800, 1600]
+WHEEL_DIAMETER_INCHES = 4.2
+WHEEL_CIRCUMFERENCE_M = WHEEL_DIAMETER_INCHES * 0.0254 * math.pi
+METERS_PER_ROTATION = (2.0 * math.pi * (WHEEL_DIAMETER_INCHES / 2.0)) * 0.0254
+PACE_FEEDFORWARD_TABLE = [
+    (0.4, 1520),
+    (1.0, 1540),
+    (2.0, 1580),
+    (3.0, 1620),
+    (4.0, 1660),
+]
+PACE_KP_SPEED_US_PER_MPS = 45.0
+PACE_KI_SPEED_US_PER_MPS_S = 8.0
+PACE_KT_SCHEDULE_US_PER_S = 12.0
+PACE_KSPLIT_MPS_PER_S = 0.15
+PACE_MIN_TARGET_SPEED_MPS = 0.4
+PACE_MAX_TARGET_SPEED_MPS = 8.0
+PACE_SPEED_LPF_ALPHA = 0.30
+PACE_THROTTLE_LPF_ALPHA = 0.35
+PACE_MAX_THROTTLE_RATE_US_PER_S = 150.0
+PACE_LOG_PATH = Path("pace_run.csv")
+PACE_LOG_FIELDS = [
+    "timestamp_s",
+    "distance_m",
+    "target_speed_mps",
+    "v_ref_mps",
+    "measured_speed_mps",
+    "elapsed_s",
+    "expected_elapsed_s",
+    "schedule_error_s",
+    "speed_error_mps",
+    "u_ff",
+    "u_fb_speed",
+    "u_fb_i",
+    "u_fb_schedule",
+    "throttle_cmd_us",
+]
 # ==========================================
 
 app = Flask(__name__, static_folder="web/static")
@@ -36,23 +76,174 @@ app = Flask(__name__, static_folder="web/static")
 class RobotState:
     armed: bool = False
     running: bool = False
-    requested_speed: int = 25  # percent (0..100)
     steering_angle: int = STEER_CENTER
     throttle_us: int = ESC_NEUTRAL_US
     vision_ok: bool = False
     serial_ok: bool = False
     manual_steer_mode: str = "vision"  # vision|left|center|right
     last_error: str = ""
+    target_distance_m: float = 100.0
+    target_time_s: float = 25.0
+    target_speed_mps: float = 4.0
+    encoder_count: int = 0
+    measured_distance_m: float = 0.0
+    measured_speed_mps: float = 0.0
+    pacing_complete: bool = False
+    target_rotations: float = 0.0
+    expected_elapsed_s: float = 0.0
+    actual_elapsed_s: float = 0.0
+    schedule_error_s: float = 0.0
+
+
+@dataclass
+class PaceControllerState:
+    active: bool = False
+    start_time_s: float = 0.0
+    speed_filtered_mps: float = 0.0
+    speed_integral: float = 0.0
+    throttle_filtered_us: float = float(ESC_FORWARD_MIN_US)
+    last_throttle_cmd_us: float = float(ESC_FORWARD_MIN_US)
+    last_update_s: float = 0.0
 
 
 state = RobotState()
 state_lock = threading.Lock()
+pace_state = PaceControllerState()
+pace_lock = threading.Lock()
+pace_log_lock = threading.Lock()
 
 
-def map_speed_to_throttle(speed_percent: int) -> int:
-    speed_percent = max(0, min(100, speed_percent))
-    span = ESC_FORWARD_MAX_US - ESC_FORWARD_MIN_US
-    return ESC_FORWARD_MIN_US + int((speed_percent / 100.0) * span)
+def append_pace_log(sample: dict):
+    with pace_log_lock:
+        new_file = not PACE_LOG_PATH.exists()
+        with PACE_LOG_PATH.open("a", newline="") as fp:
+            writer = csv.DictWriter(fp, fieldnames=PACE_LOG_FIELDS)
+            if new_file:
+                writer.writeheader()
+            writer.writerow(sample)
+
+
+def distance_for_counts(counts: int) -> float:
+    return counts * METERS_PER_ROTATION
+
+
+def calculate_target_speed(distance_m: float, time_s: float) -> float:
+    if time_s <= 0:
+        raise ValueError("time_must_be_positive")
+    if distance_m <= 0:
+        raise ValueError("distance_must_be_positive")
+    return distance_m / time_s
+
+
+def rotations_for_distance(distance_m: float) -> float:
+    return distance_m / METERS_PER_ROTATION
+
+
+def sync_workout_metrics():
+    with state_lock:
+        state.target_speed_mps = calculate_target_speed(state.target_distance_m, state.target_time_s)
+        state.target_rotations = rotations_for_distance(state.target_distance_m)
+
+
+def interp_feedforward_throttle(target_speed_mps: float) -> float:
+    table = PACE_FEEDFORWARD_TABLE
+    if target_speed_mps <= table[0][0]:
+        return table[0][1]
+    if target_speed_mps >= table[-1][0]:
+        return table[-1][1]
+    for idx in range(1, len(table)):
+        v0, u0 = table[idx - 1]
+        v1, u1 = table[idx]
+        if v0 <= target_speed_mps <= v1:
+            ratio = (target_speed_mps - v0) / (v1 - v0)
+            return u0 + ratio * (u1 - u0)
+    return table[-1][1]
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def low_pass(prev: float, new: float, alpha: float) -> float:
+    return alpha * new + (1.0 - alpha) * prev
+
+
+def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s: float, target_distance_m: float, target_time_s: float):
+    with pace_lock:
+        if not pace_state.active:
+            pace_state.active = True
+            pace_state.start_time_s = now_s
+            pace_state.last_update_s = now_s
+            pace_state.speed_filtered_mps = measured_speed_mps
+            pace_state.speed_integral = 0.0
+            pace_state.throttle_filtered_us = float(ESC_FORWARD_MIN_US)
+            pace_state.last_throttle_cmd_us = float(ESC_FORWARD_MIN_US)
+
+        dt = max(1e-3, now_s - pace_state.last_update_s)
+        pace_state.last_update_s = now_s
+        elapsed_s = now_s - pace_state.start_time_s
+
+        pace_state.speed_filtered_mps = low_pass(
+            pace_state.speed_filtered_mps, measured_speed_mps, PACE_SPEED_LPF_ALPHA
+        )
+
+        expected_elapsed_s = target_time_s * clamp(distance_m / max(target_distance_m, 1e-6), 0.0, 1.0)
+        schedule_error_s = elapsed_s - expected_elapsed_s
+        target_speed_mps = target_distance_m / target_time_s
+        v_ref_mps = clamp(
+            target_speed_mps + (PACE_KSPLIT_MPS_PER_S * schedule_error_s),
+            PACE_MIN_TARGET_SPEED_MPS,
+            PACE_MAX_TARGET_SPEED_MPS,
+        )
+
+        speed_error_mps = v_ref_mps - pace_state.speed_filtered_mps
+        pace_state.speed_integral = clamp(
+            pace_state.speed_integral + (speed_error_mps * dt),
+            -200.0,
+            200.0,
+        )
+
+        u_ff = interp_feedforward_throttle(v_ref_mps)
+        u_fb_speed = PACE_KP_SPEED_US_PER_MPS * speed_error_mps
+        u_fb_i = PACE_KI_SPEED_US_PER_MPS_S * pace_state.speed_integral
+        u_fb_schedule = PACE_KT_SCHEDULE_US_PER_S * schedule_error_s
+        u_raw = u_ff + u_fb_speed + u_fb_i + u_fb_schedule
+
+        u_clamped = clamp(u_raw, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US)
+        pace_state.throttle_filtered_us = low_pass(
+            pace_state.throttle_filtered_us, u_clamped, PACE_THROTTLE_LPF_ALPHA
+        )
+        max_step = PACE_MAX_THROTTLE_RATE_US_PER_S * dt
+        u_rate_limited = clamp(
+            pace_state.throttle_filtered_us,
+            pace_state.last_throttle_cmd_us - max_step,
+            pace_state.last_throttle_cmd_us + max_step,
+        )
+        throttle_cmd_us = int(clamp(u_rate_limited, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US))
+        pace_state.last_throttle_cmd_us = throttle_cmd_us
+
+    return {
+        "throttle_cmd_us": throttle_cmd_us,
+        "target_speed_mps": target_speed_mps,
+        "v_ref_mps": v_ref_mps,
+        "elapsed_s": elapsed_s,
+        "expected_elapsed_s": expected_elapsed_s,
+        "schedule_error_s": schedule_error_s,
+        "speed_error_mps": speed_error_mps,
+        "u_ff": u_ff,
+        "u_fb_speed": u_fb_speed,
+        "u_fb_i": u_fb_i,
+        "u_fb_schedule": u_fb_schedule,
+        "measured_speed_mps": pace_state.speed_filtered_mps,
+    }
+
+
+def reset_pacing_controller():
+    with pace_lock:
+        pace_state.active = False
+        pace_state.speed_integral = 0.0
+        pace_state.last_throttle_cmd_us = float(ESC_FORWARD_MIN_US)
+        pace_state.throttle_filtered_us = float(ESC_FORWARD_MIN_US)
 
 
 class SerialLink:
@@ -84,6 +275,19 @@ class SerialLink:
                 self.ser = None
                 return False
 
+    def read_line(self):
+        with self.lock:
+            if not self.ensure_connected():
+                return None
+            try:
+                raw = self.ser.readline()
+            except serial.SerialException:
+                self.ser = None
+                return None
+        if not raw:
+            return None
+        return raw.decode("utf-8", errors="ignore").strip()
+
     def close(self):
         with self.lock:
             if self.ser and self.ser.is_open:
@@ -99,6 +303,10 @@ def set_safe_stop(reason: str):
         state.running = False
         state.throttle_us = ESC_NEUTRAL_US
         state.last_error = reason
+        state.expected_elapsed_s = 0.0
+        state.actual_elapsed_s = 0.0
+        state.schedule_error_s = 0.0
+    reset_pacing_controller()
     serial_link.send_line("STOP")
     print(f"[SAFETY] STOP triggered: {reason}")
 
@@ -121,6 +329,33 @@ def arm_system() -> bool:
         if not state.armed:
             state.last_error = "arm_failed_serial"
     return ok1 and ok2
+
+
+def serial_reader_loop():
+    while True:
+        line = serial_link.read_line()
+        if not line:
+            time.sleep(0.05)
+            continue
+
+        if not line.startswith("TELEMETRY:"):
+            continue
+
+        payload = {}
+        for item in line[len("TELEMETRY:") :].split(","):
+            if "=" not in item:
+                continue
+            key, value = item.split("=", 1)
+            payload[key.strip()] = value.strip()
+
+        with state_lock:
+            if "count" in payload:
+                state.encoder_count = int(payload["count"])
+                state.measured_distance_m = distance_for_counts(state.encoder_count)
+            if "meters" in payload:
+                state.measured_distance_m = float(payload["meters"])
+            if "mps" in payload:
+                state.measured_speed_mps = float(payload["mps"])
 
 
 def vision_and_control_loop(show_debug: bool):
@@ -185,21 +420,56 @@ def vision_and_control_loop(show_debug: bool):
 
             state.steering_angle = int(np.clip(steer_angle, 0, 180))
 
-            if state.running and state.armed:
-                state.throttle_us = map_speed_to_throttle(state.requested_speed)
-            else:
-                state.throttle_us = ESC_NEUTRAL_US
-
-            throttle = state.throttle_us
+            running = state.running and state.armed
             steering = state.steering_angle
+            distance_m = state.measured_distance_m
+            measured_speed_mps = state.measured_speed_mps
+            target_distance_m = state.target_distance_m
+            target_time_s = state.target_time_s
 
         now = time.time()
         if now - last_send >= COMMAND_PERIOD_S:
             ok1 = serial_link.send_line(f"STEER:{steering}")
-            if throttle <= ESC_NEUTRAL_US:
-                ok2 = serial_link.send_line("STOP")
+            ok2 = True
+            if running:
+                control = compute_pacing_throttle(
+                    distance_m=distance_m,
+                    measured_speed_mps=measured_speed_mps,
+                    now_s=now,
+                    target_distance_m=target_distance_m,
+                    target_time_s=target_time_s,
+                )
+                throttle_cmd_us = control["throttle_cmd_us"]
+                ok2 = serial_link.send_line(f"THROTTLE:{throttle_cmd_us}")
+                with state_lock:
+                    state.throttle_us = throttle_cmd_us
+                    state.actual_elapsed_s = control["elapsed_s"]
+                    state.expected_elapsed_s = control["expected_elapsed_s"]
+                    state.schedule_error_s = control["schedule_error_s"]
+                    if state.measured_distance_m >= state.target_distance_m:
+                        state.running = False
+                        state.pacing_complete = True
+                        state.last_error = "workout_complete"
+                append_pace_log(
+                    {
+                        "timestamp_s": now,
+                        "distance_m": distance_m,
+                        "target_speed_mps": control["target_speed_mps"],
+                        "v_ref_mps": control["v_ref_mps"],
+                        "measured_speed_mps": control["measured_speed_mps"],
+                        "elapsed_s": control["elapsed_s"],
+                        "expected_elapsed_s": control["expected_elapsed_s"],
+                        "schedule_error_s": control["schedule_error_s"],
+                        "speed_error_mps": control["speed_error_mps"],
+                        "u_ff": control["u_ff"],
+                        "u_fb_speed": control["u_fb_speed"],
+                        "u_fb_i": control["u_fb_i"],
+                        "u_fb_schedule": control["u_fb_schedule"],
+                        "throttle_cmd_us": throttle_cmd_us,
+                    }
+                )
             else:
-                ok2 = serial_link.send_line(f"THROTTLE:{throttle}")
+                ok2 = serial_link.send_line("STOP")
 
             with state_lock:
                 state.serial_ok = ok1 and ok2
@@ -231,18 +501,46 @@ def _start_logic():
         if not state.armed:
             return False
         state.running = True
+        state.pacing_complete = False
+        state.measured_distance_m = 0.0
+        state.measured_speed_mps = 0.0
+        state.encoder_count = 0
         state.last_error = ""
-    return True
+        state.expected_elapsed_s = 0.0
+        state.actual_elapsed_s = 0.0
+        state.schedule_error_s = 0.0
+        distance_m = state.target_distance_m
+        time_s = state.target_time_s
+        target_speed_mps = state.target_speed_mps
+        target_rotations = state.target_rotations
+    reset_pacing_controller()
+    ok = serial_link.send_line(f"JETSON:{distance_m:.2f},{time_s:.2f},{target_speed_mps:.3f},{target_rotations:.2f}")
+    with state_lock:
+        state.serial_ok = ok
+        if not ok:
+            state.running = False
+            state.last_error = "workout_send_failed"
+    return ok
 
 
 def _stop_logic(reason="user_stop"):
     set_safe_stop(reason)
 
 
-def _set_speed_logic(speed: int):
-    speed = max(0, min(100, int(speed)))
+def _set_workout_logic(distance_m: float, time_s: float):
+    target_speed_mps = calculate_target_speed(distance_m, time_s)
+    target_rotations = rotations_for_distance(distance_m)
     with state_lock:
-        state.requested_speed = speed
+        state.target_distance_m = distance_m
+        state.target_time_s = time_s
+        state.target_speed_mps = target_speed_mps
+        state.target_rotations = target_rotations
+        state.pacing_complete = False
+        state.last_error = ""
+    ok = serial_link.send_line(f"WORKOUTCFG:{distance_m:.2f},{time_s:.2f},{target_speed_mps:.3f},{target_rotations:.2f}")
+    with state_lock:
+        state.serial_ok = ok
+    return ok
 
 
 @app.post("/api/arm")
@@ -265,7 +563,7 @@ def api_start():
     started = _start_logic()
     if not started:
         with state_lock:
-            state.last_error = "not_armed"
+            state.last_error = "not_armed_or_workout_failed"
     return jsonify(current_status())
 
 
@@ -276,12 +574,17 @@ def api_stop():
     return jsonify(current_status())
 
 
-@app.post("/api/set_speed")
-@app.post("/set_speed")
-def api_set_speed():
+@app.post("/api/workout")
+def api_workout():
     body = request.get_json(force=True, silent=True) or {}
-    speed = body.get("speed", 0)
-    _set_speed_logic(speed)
+    try:
+        distance_m = float(body.get("distance_m", state.target_distance_m))
+        time_s = float(body.get("time_s", state.target_time_s))
+        _set_workout_logic(distance_m, time_s)
+    except (TypeError, ValueError) as exc:
+        with state_lock:
+            state.last_error = str(exc)
+        return jsonify(current_status()), 400
     return jsonify(current_status())
 
 
@@ -307,13 +610,27 @@ def current_status() -> dict:
         return {
             "armed": state.armed,
             "running": state.running,
-            "requested_speed": state.requested_speed,
             "steering_angle": state.steering_angle,
             "throttle_us": state.throttle_us,
             "vision_ok": state.vision_ok,
             "serial_ok": state.serial_ok,
             "manual_steer_mode": state.manual_steer_mode,
             "last_error": state.last_error,
+            "target_distance_m": state.target_distance_m,
+            "target_time_s": state.target_time_s,
+            "target_speed_mps": state.target_speed_mps,
+            "target_rotations": state.target_rotations,
+            "encoder_count": state.encoder_count,
+            "measured_distance_m": state.measured_distance_m,
+            "measured_speed_mps": state.measured_speed_mps,
+            "pacing_complete": state.pacing_complete,
+            "expected_elapsed_s": state.expected_elapsed_s,
+            "actual_elapsed_s": state.actual_elapsed_s,
+            "schedule_error_s": state.schedule_error_s,
+            "wheel_diameter_inches": WHEEL_DIAMETER_INCHES,
+            "wheel_circumference_m": WHEEL_CIRCUMFERENCE_M,
+            "meters_per_rotation": METERS_PER_ROTATION,
+            "distance_presets_m": DISTANCE_PRESETS_M,
         }
 
 
@@ -324,7 +641,11 @@ def main():
     parser.add_argument("--debug-view", action="store_true", help="Show OpenCV debug windows")
     args = parser.parse_args()
 
+    sync_workout_metrics()
     disarm("startup_default")
+
+    serial_reader = threading.Thread(target=serial_reader_loop, daemon=True)
+    serial_reader.start()
 
     worker = threading.Thread(target=vision_and_control_loop, args=(args.debug_view,), daemon=True)
     worker.start()
