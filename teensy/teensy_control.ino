@@ -2,8 +2,8 @@
 #include <Servo.h>
 
 // ======= Hardware / tuning defaults =======
-const int STEERING_PIN = 5;
-const int THROTTLE_PIN = 6;
+const int STEERING_PIN = 9;
+const int THROTTLE_PIN = 2;
 const int ENCODER_PIN = 23;
 const int BAUD_RATE = 115200;
 
@@ -41,6 +41,7 @@ volatile long encoderTicks = 0;
 long lastSpeedSampleCount = 0;
 bool armed = false;
 bool workoutActive = false;
+bool externalPacingActive = false;
 
 int currentSteer = STEER_CENTER_DEG;
 int currentThrottleUs = ESC_NEUTRAL_US;
@@ -62,6 +63,7 @@ void applySafeStop() {
   currentThrottleUs = ESC_NEUTRAL_US;
   throttleEsc.writeMicroseconds(currentThrottleUs);
   workoutActive = false;
+  externalPacingActive = false;
 }
 
 void applySteering(int steerDeg) {
@@ -108,6 +110,27 @@ void processWorkoutCommand(const String &payload, bool startNow) {
     resetWorkoutTracking();
     workoutStartMs = millis();
     workoutActive = armed;
+    externalPacingActive = false;
+  } else {
+    externalPacingActive = false;
+  }
+}
+
+void processJetsonPacingCommand(const String &payload) {
+  processWorkoutCommand(payload, false);
+  resetWorkoutTracking();
+  workoutStartMs = millis();
+  workoutActive = false;
+  externalPacingActive = armed;
+}
+
+void updateSpeedEstimate(unsigned long now, long tickCount) {
+  float elapsedS = (now - lastSpeedSampleMs) / 1000.0f;
+  if (elapsedS > 0.0f) {
+    long deltaCount = tickCount - lastSpeedSampleCount;
+    measuredSpeedMps = metersForCounts(deltaCount) / elapsedS;
+    lastSpeedSampleCount = tickCount;
+    lastSpeedSampleMs = now;
   }
 }
 
@@ -148,6 +171,12 @@ void processCommand(const String &cmdRaw) {
     return;
   }
 
+  if (cmd.startsWith("JETSON:")) {
+    processJetsonPacingCommand(cmd.substring(7));
+    lastCommandTime = millis();
+    return;
+  }
+
   if (cmd.startsWith("STEER:")) {
     int value = cmd.substring(6).toInt();
     applySteering(value);
@@ -173,14 +202,7 @@ void updateWorkoutControl() {
   noInterrupts();
   tickCount = encoderTicks;
   interrupts();
-
-  float elapsedS = (now - lastSpeedSampleMs) / 1000.0f;
-  if (elapsedS > 0.0f) {
-    long deltaCount = tickCount - lastSpeedSampleCount;
-    measuredSpeedMps = metersForCounts(deltaCount) / elapsedS;
-    lastSpeedSampleCount = tickCount;
-    lastSpeedSampleMs = now;
-  }
+  updateSpeedEstimate(now, tickCount);
 
   float traveledM = metersForCounts(tickCount);
   if (workoutActive && static_cast<float>(tickCount) >= targetRotations) {
@@ -198,6 +220,10 @@ void updateWorkoutControl() {
     commandedThrottle = constrain(commandedThrottle, ESC_FORWARD_BASE_US, ESC_FORWARD_LIMIT_US);
     applyThrottle(commandedThrottle);
   }
+
+  if (externalPacingActive && static_cast<float>(tickCount) >= targetRotations) {
+    applySafeStop();
+  }
 }
 
 void emitTelemetry() {
@@ -213,7 +239,7 @@ void emitTelemetry() {
   interrupts();
 
   float traveledM = metersForCounts(tickCount);
-  int done = (!workoutActive && traveledM >= targetDistanceM) ? 1 : 0;
+  int done = ((workoutActive || externalPacingActive) && traveledM >= targetDistanceM) ? 1 : 0;
 
   Serial.print("TELEMETRY:count=");
   Serial.print(tickCount);
