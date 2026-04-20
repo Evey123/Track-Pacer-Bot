@@ -1,12 +1,12 @@
 :root {
   color-scheme: dark;
-  --bg: #0f172a;
-  --card: #1e293b;
-  --text: #e2e8f0;
-  --green: #10b981;
-  --red: #ef4444;
+  --bg: #06142b;
+  --card: #0e223f;
+  --text: #dbeafe;
+  --green: #22c55e;
+  --red: #f87171;
   --amber: #f59e0b;
-  --blue: #3b82f6;
+  --blue: #2563eb;
 }
 
 body {
@@ -59,8 +59,26 @@ h2 {
   font-size: 0.9rem;
 }
 
-input[type='range'] {
+.hint {
+  font-size: 0.9rem;
+  color: #bfdbfe;
+  margin-top: 0.75rem;
+}
+
+input[type='range'],
+input[type='number'],
+select {
   width: 100%;
+}
+
+input[type='number'],
+select {
+  margin-top: 0.35rem;
+  padding: 0.65rem;
+  border-radius: 8px;
+  border: 1px solid #1d4ed8;
+  background: #0a1a33;
+  color: var(--text);
 }
 
 .buttons {
@@ -88,7 +106,7 @@ input[type='range'] {
 }
 
 .btn.disarm {
-  background: #64748b;
+  background: #1e3a8a;
 }
 
 .btn.start {
@@ -100,12 +118,39 @@ input[type='range'] {
 }
 
 .btn.small {
-  background: #334155;
+  background: #1d4ed8;
   font-size: 0.95rem;
+}
+
+.btn.blue {
+  background: var(--blue);
+}
+
+.btn.wide {
+  width: 100%;
+  margin-top: 0.75rem;
 }
 
 .steering-row {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.5rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+
+label {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.preset-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0.5rem;
+  margin-top: 0.75rem;
 }
