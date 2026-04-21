@@ -42,14 +42,19 @@ PACE_FEEDFORWARD_TABLE = [
     (4.0, 1660),
 ]
 PACE_KP_SPEED_US_PER_MPS = 45.0
-PACE_KI_SPEED_US_PER_MPS_S = 8.0
-PACE_KT_SCHEDULE_US_PER_S = 12.0
-PACE_KSPLIT_MPS_PER_S = 0.15
+PACE_KI_SPEED_US_PER_MPS_S = 4.0
+PACE_KT_SCHEDULE_US_PER_S = 7.0
+PACE_KSPLIT_MPS_PER_S = 0.10
 PACE_MIN_TARGET_SPEED_MPS = 0.4
 PACE_MAX_TARGET_SPEED_MPS = 8.0
-PACE_SPEED_LPF_ALPHA = 0.30
-PACE_THROTTLE_LPF_ALPHA = 0.35
-PACE_MAX_THROTTLE_RATE_US_PER_S = 150.0
+PACE_SPEED_LPF_ALPHA = 0.20
+PACE_THROTTLE_LPF_ALPHA = 0.25
+PACE_MAX_THROTTLE_RATE_US_PER_S = 80.0
+PACE_SCHEDULE_ERROR_CLAMP_S = 3.0
+PACE_SPEED_ERROR_DEADBAND_MPS = 0.08
+PACE_INTEGRAL_SPEED_ERROR_LIMIT_MPS = 0.60
+PACE_MIN_ROLLING_THROTTLE_US = 1540
+TELEMETRY_STALE_TIMEOUT_S = 0.35
 PACE_LOG_PATH = Path("pace_run.csv")
 PACE_LOG_FIELDS = [
     "timestamp_s",
@@ -93,6 +98,7 @@ class RobotState:
     expected_elapsed_s: float = 0.0
     actual_elapsed_s: float = 0.0
     schedule_error_s: float = 0.0
+    telemetry_timestamp_s: float = 0.0
 
 
 @dataclass
@@ -138,6 +144,8 @@ def calculate_target_speed(distance_m: float, time_s: float) -> float:
 def rotations_for_distance(distance_m: float) -> float:
     return distance_m / METERS_PER_ROTATION
 
+def rotations_for_distance(distance_m: float) -> float:
+    return distance_m / METERS_PER_ROTATION
 
 def sync_workout_metrics():
     with state_lock:
@@ -188,7 +196,7 @@ def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s:
         )
 
         expected_elapsed_s = target_time_s * clamp(distance_m / max(target_distance_m, 1e-6), 0.0, 1.0)
-        schedule_error_s = elapsed_s - expected_elapsed_s
+        schedule_error_s = clamp(elapsed_s - expected_elapsed_s, -PACE_SCHEDULE_ERROR_CLAMP_S, PACE_SCHEDULE_ERROR_CLAMP_S)
         target_speed_mps = target_distance_m / target_time_s
         v_ref_mps = clamp(
             target_speed_mps + (PACE_KSPLIT_MPS_PER_S * schedule_error_s),
@@ -197,11 +205,16 @@ def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s:
         )
 
         speed_error_mps = v_ref_mps - pace_state.speed_filtered_mps
-        pace_state.speed_integral = clamp(
-            pace_state.speed_integral + (speed_error_mps * dt),
-            -200.0,
-            200.0,
-        )
+        if abs(speed_error_mps) < PACE_SPEED_ERROR_DEADBAND_MPS:
+            speed_error_mps = 0.0
+
+        integrate_error = abs(speed_error_mps) <= PACE_INTEGRAL_SPEED_ERROR_LIMIT_MPS
+        if integrate_error:
+            pace_state.speed_integral = clamp(
+                pace_state.speed_integral + (speed_error_mps * dt),
+                -120.0,
+                120.0,
+            )
 
         u_ff = interp_feedforward_throttle(v_ref_mps)
         u_fb_speed = PACE_KP_SPEED_US_PER_MPS * speed_error_mps
@@ -220,6 +233,8 @@ def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s:
             pace_state.last_throttle_cmd_us + max_step,
         )
         throttle_cmd_us = int(clamp(u_rate_limited, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US))
+        if distance_m < target_distance_m and v_ref_mps > 0.7:
+            throttle_cmd_us = max(throttle_cmd_us, PACE_MIN_ROLLING_THROTTLE_US)
         pace_state.last_throttle_cmd_us = throttle_cmd_us
 
     return {
@@ -348,6 +363,7 @@ def serial_reader_loop():
             key, value = item.split("=", 1)
             payload[key.strip()] = value.strip()
 
+        now = time.time()
         with state_lock:
             if "count" in payload:
                 state.encoder_count = int(payload["count"])
@@ -356,6 +372,7 @@ def serial_reader_loop():
                 state.measured_distance_m = float(payload["meters"])
             if "mps" in payload:
                 state.measured_speed_mps = float(payload["mps"])
+            state.telemetry_timestamp_s = now
 
 
 def vision_and_control_loop(show_debug: bool):
@@ -406,6 +423,7 @@ def vision_and_control_loop(show_debug: bool):
 
         smoothed_steer = int((STEER_ALPHA * steer_from_vision) + ((1.0 - STEER_ALPHA) * smoothed_steer))
 
+        now = time.time()
         with state_lock:
             state.vision_ok = detected
             manual_mode = state.manual_steer_mode
@@ -426,12 +444,11 @@ def vision_and_control_loop(show_debug: bool):
             measured_speed_mps = state.measured_speed_mps
             target_distance_m = state.target_distance_m
             target_time_s = state.target_time_s
-
-        now = time.time()
+            telemetry_age_s = now - state.telemetry_timestamp_s if state.telemetry_timestamp_s > 0 else 999.0
         if now - last_send >= COMMAND_PERIOD_S:
             ok1 = serial_link.send_line(f"STEER:{steering}")
             ok2 = True
-            if running:
+            if running and telemetry_age_s <= TELEMETRY_STALE_TIMEOUT_S:
                 control = compute_pacing_throttle(
                     distance_m=distance_m,
                     measured_speed_mps=measured_speed_mps,
@@ -468,6 +485,9 @@ def vision_and_control_loop(show_debug: bool):
                         "throttle_cmd_us": throttle_cmd_us,
                     }
                 )
+            elif running:
+                throttle_cmd_us = int(clamp(pace_state.last_throttle_cmd_us, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US))
+                ok2 = serial_link.send_line(f"THROTTLE:{throttle_cmd_us}")
             else:
                 ok2 = serial_link.send_line("STOP")
 
