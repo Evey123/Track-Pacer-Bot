@@ -144,6 +144,8 @@ def calculate_target_speed(distance_m: float, time_s: float) -> float:
 def rotations_for_distance(distance_m: float) -> float:
     return distance_m / METERS_PER_ROTATION
 
+def rotations_for_distance(distance_m: float) -> float:
+    return distance_m / METERS_PER_ROTATION
 
 def sync_workout_metrics():
     with state_lock:
