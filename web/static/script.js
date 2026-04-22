@@ -7,6 +7,7 @@ const encoderText = document.getElementById('encoderText');
 const distanceText = document.getElementById('distanceText');
 const measuredSpeedText = document.getElementById('measuredSpeedText');
 const targetPaceText = document.getElementById('targetPaceText');
+const motorPowerText = document.getElementById('motorPowerText');
 const targetRotationsText = document.getElementById('targetRotationsText');
 const distanceInput = document.getElementById('distanceInput');
 const timeInput = document.getElementById('timeInput');
@@ -37,6 +38,7 @@ function renderStatus(status, options = {}) {
   distanceText.textContent = Number(status.measured_distance_m ?? 0).toFixed(2);
   measuredSpeedText.textContent = Number(status.measured_speed_mps ?? 0).toFixed(2);
   targetPaceText.textContent = Number(status.target_speed_mps ?? 0).toFixed(2);
+  motorPowerText.textContent = Number(status.motor_power_percent ?? 0).toFixed(1);
   targetRotationsText.textContent = Number(status.target_rotations ?? 0).toFixed(2);
   errorText.textContent = status.last_error || '';
 

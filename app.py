@@ -1,5 +1,6 @@
 import argparse
 import csv
+import json
 import math
 import threading
 import time
@@ -56,6 +57,11 @@ PACE_INTEGRAL_SPEED_ERROR_LIMIT_MPS = 0.60
 PACE_MIN_ROLLING_THROTTLE_US = 1540
 TELEMETRY_STALE_TIMEOUT_S = 0.35
 PACE_LOG_PATH = Path("pace_run.csv")
+PACE_MODEL_PATH = Path("pace_model.json")
+PACE_MODEL_BIAS_MIN_US = -120.0
+PACE_MODEL_BIAS_MAX_US = 120.0
+PACE_LEARN_RATE_US_PER_S = 6.0
+PACE_SCHEDULE_TRIM_US_PER_S = 3.0
 PACE_LOG_FIELDS = [
     "timestamp_s",
     "distance_m",
@@ -70,6 +76,7 @@ PACE_LOG_FIELDS = [
     "u_fb_speed",
     "u_fb_i",
     "u_fb_schedule",
+    "u_model_bias",
     "throttle_cmd_us",
 ]
 # ==========================================
@@ -99,6 +106,8 @@ class RobotState:
     actual_elapsed_s: float = 0.0
     schedule_error_s: float = 0.0
     telemetry_timestamp_s: float = 0.0
+    motor_power_percent: float = 0.0
+    finish_time_error_s: float = 0.0
 
 
 @dataclass
@@ -117,6 +126,8 @@ state_lock = threading.Lock()
 pace_state = PaceControllerState()
 pace_lock = threading.Lock()
 pace_log_lock = threading.Lock()
+pace_model_bias_us = 0.0
+pace_model_lock = threading.Lock()
 
 
 def append_pace_log(sample: dict):
@@ -127,6 +138,34 @@ def append_pace_log(sample: dict):
             if new_file:
                 writer.writeheader()
             writer.writerow(sample)
+
+
+def load_pace_model():
+    global pace_model_bias_us
+    with pace_model_lock:
+        if not PACE_MODEL_PATH.exists():
+            pace_model_bias_us = 0.0
+            return
+        try:
+            model = json.loads(PACE_MODEL_PATH.read_text())
+            pace_model_bias_us = float(model.get("bias_us", 0.0))
+            pace_model_bias_us = clamp(pace_model_bias_us, PACE_MODEL_BIAS_MIN_US, PACE_MODEL_BIAS_MAX_US)
+        except (ValueError, OSError):
+            pace_model_bias_us = 0.0
+
+
+def save_pace_model():
+    with pace_model_lock:
+        payload = {"bias_us": pace_model_bias_us}
+    PACE_MODEL_PATH.write_text(json.dumps(payload, indent=2))
+
+
+def learn_pace_model(finish_time_error_s: float):
+    global pace_model_bias_us
+    with pace_model_lock:
+        pace_model_bias_us += PACE_LEARN_RATE_US_PER_S * finish_time_error_s
+        pace_model_bias_us = clamp(pace_model_bias_us, PACE_MODEL_BIAS_MIN_US, PACE_MODEL_BIAS_MAX_US)
+    save_pace_model()
 
 
 def distance_for_counts(counts: int) -> float:
@@ -140,12 +179,12 @@ def calculate_target_speed(distance_m: float, time_s: float) -> float:
         raise ValueError("distance_must_be_positive")
     return distance_m / time_s
 
-
 def rotations_for_distance(distance_m: float) -> float:
     return distance_m / METERS_PER_ROTATION
 
 def rotations_for_distance(distance_m: float) -> float:
     return distance_m / METERS_PER_ROTATION
+
 
 def sync_workout_metrics():
     with state_lock:
@@ -205,22 +244,14 @@ def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s:
         )
 
         speed_error_mps = v_ref_mps - pace_state.speed_filtered_mps
-        if abs(speed_error_mps) < PACE_SPEED_ERROR_DEADBAND_MPS:
-            speed_error_mps = 0.0
-
-        integrate_error = abs(speed_error_mps) <= PACE_INTEGRAL_SPEED_ERROR_LIMIT_MPS
-        if integrate_error:
-            pace_state.speed_integral = clamp(
-                pace_state.speed_integral + (speed_error_mps * dt),
-                -120.0,
-                120.0,
-            )
+        with pace_model_lock:
+            model_bias_us = pace_model_bias_us
 
         u_ff = interp_feedforward_throttle(v_ref_mps)
-        u_fb_speed = PACE_KP_SPEED_US_PER_MPS * speed_error_mps
-        u_fb_i = PACE_KI_SPEED_US_PER_MPS_S * pace_state.speed_integral
-        u_fb_schedule = PACE_KT_SCHEDULE_US_PER_S * schedule_error_s
-        u_raw = u_ff + u_fb_speed + u_fb_i + u_fb_schedule
+        u_fb_speed = 0.0
+        u_fb_i = 0.0
+        u_fb_schedule = PACE_SCHEDULE_TRIM_US_PER_S * schedule_error_s
+        u_raw = u_ff + model_bias_us + u_fb_schedule
 
         u_clamped = clamp(u_raw, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US)
         pace_state.throttle_filtered_us = low_pass(
@@ -249,6 +280,7 @@ def compute_pacing_throttle(distance_m: float, measured_speed_mps: float, now_s:
         "u_fb_speed": u_fb_speed,
         "u_fb_i": u_fb_i,
         "u_fb_schedule": u_fb_schedule,
+        "model_bias_us": model_bias_us,
         "measured_speed_mps": pace_state.speed_filtered_mps,
     }
 
@@ -321,6 +353,7 @@ def set_safe_stop(reason: str):
         state.expected_elapsed_s = 0.0
         state.actual_elapsed_s = 0.0
         state.schedule_error_s = 0.0
+        state.motor_power_percent = 0.0
     reset_pacing_controller()
     serial_link.send_line("STOP")
     print(f"[SAFETY] STOP triggered: {reason}")
@@ -463,9 +496,15 @@ def vision_and_control_loop(show_debug: bool):
                     state.actual_elapsed_s = control["elapsed_s"]
                     state.expected_elapsed_s = control["expected_elapsed_s"]
                     state.schedule_error_s = control["schedule_error_s"]
+                    state.motor_power_percent = (
+                        (throttle_cmd_us - ESC_FORWARD_MIN_US) / max(1, (ESC_FORWARD_MAX_US - ESC_FORWARD_MIN_US))
+                    ) * 100.0
                     if state.measured_distance_m >= state.target_distance_m:
+                        finish_time_error_s = control["elapsed_s"] - state.target_time_s
+                        learn_pace_model(finish_time_error_s)
                         state.running = False
                         state.pacing_complete = True
+                        state.finish_time_error_s = finish_time_error_s
                         state.last_error = "workout_complete"
                 append_pace_log(
                     {
@@ -482,12 +521,17 @@ def vision_and_control_loop(show_debug: bool):
                         "u_fb_speed": control["u_fb_speed"],
                         "u_fb_i": control["u_fb_i"],
                         "u_fb_schedule": control["u_fb_schedule"],
+                        "u_model_bias": control["model_bias_us"],
                         "throttle_cmd_us": throttle_cmd_us,
                     }
                 )
             elif running:
                 throttle_cmd_us = int(clamp(pace_state.last_throttle_cmd_us, ESC_FORWARD_MIN_US, ESC_FORWARD_MAX_US))
                 ok2 = serial_link.send_line(f"THROTTLE:{throttle_cmd_us}")
+                with state_lock:
+                    state.motor_power_percent = (
+                        (throttle_cmd_us - ESC_FORWARD_MIN_US) / max(1, (ESC_FORWARD_MAX_US - ESC_FORWARD_MIN_US))
+                    ) * 100.0
             else:
                 ok2 = serial_link.send_line("STOP")
 
@@ -529,6 +573,7 @@ def _start_logic():
         state.expected_elapsed_s = 0.0
         state.actual_elapsed_s = 0.0
         state.schedule_error_s = 0.0
+        state.finish_time_error_s = 0.0
         distance_m = state.target_distance_m
         time_s = state.target_time_s
         target_speed_mps = state.target_speed_mps
@@ -647,6 +692,8 @@ def current_status() -> dict:
             "expected_elapsed_s": state.expected_elapsed_s,
             "actual_elapsed_s": state.actual_elapsed_s,
             "schedule_error_s": state.schedule_error_s,
+            "motor_power_percent": state.motor_power_percent,
+            "finish_time_error_s": state.finish_time_error_s,
             "wheel_diameter_inches": WHEEL_DIAMETER_INCHES,
             "wheel_circumference_m": WHEEL_CIRCUMFERENCE_M,
             "meters_per_rotation": METERS_PER_ROTATION,
@@ -661,6 +708,7 @@ def main():
     parser.add_argument("--debug-view", action="store_true", help="Show OpenCV debug windows")
     args = parser.parse_args()
 
+    load_pace_model()
     sync_workout_metrics()
     disarm("startup_default")
 

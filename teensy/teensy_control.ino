@@ -2,8 +2,8 @@
 #include <Servo.h>
 
 // ======= Hardware / tuning defaults =======
-const int STEERING_PIN = 9;
-const int THROTTLE_PIN = 2;
+const int STEERING_PIN = 5;
+const int THROTTLE_PIN = 6;
 const int ENCODER_PIN = 23;
 const int BAUD_RATE = 115200;
 
