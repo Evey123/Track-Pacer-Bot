@@ -16,13 +16,36 @@
         <p class="substatus">ARM: <span id="armText">DISARMED</span></p>
         <p class="substatus">Serial: <span id="serialText">UNKNOWN</span></p>
         <p class="substatus">Vision: <span id="visionText">UNKNOWN</span></p>
+        <p class="substatus">Encoder counts: <span id="encoderText">0</span></p>
+        <p class="substatus">Distance traveled: <span id="distanceText">0.00</span> m</p>
+        <p class="substatus">Measured speed: <span id="measuredSpeedText">0.00</span> m/s</p>
+        <p class="substatus">Target pace: <span id="targetPaceText">0.00</span> m/s</p>
+        <p class="substatus">Motor power: <span id="motorPowerText">0.0</span>%</p>
+        <p class="substatus">Target rotations: <span id="targetRotationsText">0.00</span></p>
         <p class="error" id="errorText"></p>
       </section>
 
       <section class="card">
-        <h2>Motor Speed</h2>
-        <input id="speedSlider" type="range" min="0" max="100" value="25" />
-        <p>Requested speed: <span id="speedValue">25</span>%</p>
+        <h2>Workout Plan</h2>
+        <div class="form-grid">
+          <label>
+            Distance (meters)
+            <input id="distanceInput" type="number" min="0.1" step="0.1" value="100" />
+          </label>
+          <label>
+            Time (seconds)
+            <input id="timeInput" type="number" min="1" step="0.1" value="25" />
+          </label>
+        </div>
+        <div class="preset-row">
+          <button type="button" class="btn small preset-btn" data-distance="100">100m</button>
+          <button type="button" class="btn small preset-btn" data-distance="200">200m</button>
+          <button type="button" class="btn small preset-btn" data-distance="400">400m</button>
+          <button type="button" class="btn small preset-btn" data-distance="800">800m</button>
+          <button type="button" class="btn small preset-btn" data-distance="1600">1600m</button>
+        </div>
+        <p class="hint">Each encoder count is treated as one full wheel rotation. Distance is converted with 2π(2.1 in) and the robot computes the required rotations and target pace automatically from distance and time.</p>
+        <button id="saveWorkoutBtn" class="btn blue wide">Save Workout</button>
       </section>
 
       <section class="card buttons four">
