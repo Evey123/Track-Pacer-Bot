@@ -101,3 +101,10 @@ document.querySelectorAll('.preset-btn').forEach((button) => {
 
 refreshStatus();
 setInterval(refreshStatus, 1000);
+
+
+document.querySelectorAll('.preset-btn').forEach((button) => {
+  button.addEventListener('click', () => {
+    distanceInput.value = button.dataset.distance;
+  });
+});
